@@ -198,45 +198,56 @@ Resources:
         # # STAGING #
         # ###########
 
-        # - Name: staging
-        #   Actions:
-        #     - Name: create-changeset
-        #       ActionTypeId:
-        #         Category: Deploy
-        #         Provider: CloudFormation
-        #         Owner: AWS
-        #         Version: "1"
-        #       Configuration:
-        #         ActionMode: CHANGE_SET_REPLACE
-        #         StackName: !Sub "ecommerce-staging-${ServiceName}"
-        #         ChangeSetName: !Sub "ecommerce-staging-${ServiceName}"
-        #         Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
-        #         # TODO: Automatically generate parameter values as part of build process
-        #         ParameterOverrides: |
-        #           {
-        #             "Environment": "tests",
-        #             "LogLevel": "DEBUG",
-        #             "EventBusName": "/ecommerce/staging/platform/event-bus/name"
-        #           }
-        #         RoleArn: !GetAtt StagingEnvironment.Outputs.RoleArn
-        #         TemplateConfiguration: "TemplateArtifact::config.staging.json"
-        #         TemplatePath: "TemplateArtifact::template.yaml"
-        #       InputArtifacts:
-        #         - Name: TemplateArtifact
-        #       RunOrder: 1
-        #     - Name: execute-changeset
-        #       ActionTypeId:
-        #         Category: Deploy
-        #         Provider: CloudFormation
-        #         Owner: AWS
-        #         Version: "1"
-        #       Configuration:
-        #         ActionMode: CHANGE_SET_EXECUTE
-        #         StackName: !Sub "ecommerce-staging-${ServiceName}"
-        #         ChangeSetName: !Sub "ecommerce-staging-${ServiceName}"
-        #         RoleArn: !GetAtt StagingEnvironment.Outputs.RoleArn
-        #       RunOrder: 2
-        #     # TODO: Run end-to-end tests
+        - Name: staging
+          Actions:
+            - Name: create-changeset
+              ActionTypeId:
+                Category: Deploy
+                Provider: CloudFormation
+                Owner: AWS
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: !Sub "ecommerce-staging-${ServiceName}"
+                ChangeSetName: !Sub "ecommerce-staging-${ServiceName}"
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                # TODO: Automatically generate parameter values as part of build process
+                ParameterOverrides: |
+                  {
+                    "Environment": "tests",
+                    "LogLevel": "DEBUG",
+                    "EventBusName": "/ecommerce/staging/platform/event-bus/name"
+                  }
+                RoleArn: !GetAtt StagingEnvironment.Outputs.RoleArn
+                TemplateConfiguration: "TemplateArtifact::config.staging.json"
+                TemplatePath: "TemplateArtifact::template.yaml"
+              InputArtifacts:
+                - Name: TemplateArtifact
+              RunOrder: 1
+            - Name: execute-changeset
+              ActionTypeId:
+                Category: Deploy
+                Provider: CloudFormation
+                Owner: AWS
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Sub "ecommerce-staging-${ServiceName}"
+                ChangeSetName: !Sub "ecommerce-staging-${ServiceName}"
+                RoleArn: !GetAtt StagingEnvironment.Outputs.RoleArn
+              RunOrder: 2
+            - Name: tests-e2e
+              ActionTypeId:
+                Category: Test
+                Provider: CodeBuild
+                Owner: AWS
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref StagingProject
+              InputArtifacts:
+                - Name: CodeArtifact
+              RunOrder: 3
+            # TODO: Run end-to-end tests
 
         # ########
         # # PROD #
@@ -387,13 +398,104 @@ Resources:
   # # STAGING #
   # ###########
 
-  # StagingEnvironment:
-  #   Type: AWS::CloudFormation::Stack
-  #   Properties:
-  #     TemplateURL: service-pipeline-environment.yaml
-  #     Parameters:
-  #       ServiceName: !Ref ServiceName
-  #       Environment: staging
+  StagingEnvironment:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: service-pipeline-environment.yaml
+      Parameters:
+        ServiceName: !Ref ServiceName
+        Environment: staging
+
+  StagingProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StagingProjectPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Grant access to CloudWatch Logs
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+              # Grant permission to read from the artifact bucket
+              - Effect: Allow
+                Action:
+                  - s3:GetObject*
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/*"
+              # Grant access to SSM parameters in staging
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ecommerce/staging/*"
+              # Grant permission to invoke API Gateway
+              - Effect: Allow
+                Action:
+                  - execute-api:Invoke
+                Resource: "*"
+              # Grant permission to read/write to DynamoDB
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:DescribeTable
+                  - dynamodb:ConditionCheckItem
+                Resource: "*"
+              # Grant permission to read SQS
+              - Effect: Allow
+                Action:
+                  - sqs:ChangeMessageVisibility
+                  - sqs:ChangeMessageVisibilityBatch
+                  - sqs:DeleteMessage
+                  - sqs:DeleteMessageBatch
+                  - sqs:GetQueueAttributes
+                  - sqs:ReceiveMessage
+                Resource: "*"
+              # Grant permission to perform admin operations on Cognito User Pools
+              - Effect: Allow
+                Action:
+                  - cognito-idp:Admin*
+                  - cognito-idp:CreateUserPoolClient
+                  - cognito-idp:DeleteUserPoolClient
+                Resource: "*"
+
+  StagingProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: SERVICE_NAME
+            Value: !Ref ServiceName
+          - Name: ENVIRONMENT
+            Value: staging
+        Image: aws/codebuild/standard:3.0
+        Type: LINUX_CONTAINER
+      ServiceRole: !GetAtt StagingProjectRole.Arn
+      Source:
+        BuildSpec: pipeline/resources/buildspec-staging.yaml
+        Type: CODEPIPELINE
+
+  StagingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/codebuild/${StagingProject}"
 
   # ########
   # # PROD #

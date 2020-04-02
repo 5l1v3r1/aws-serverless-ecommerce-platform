@@ -12,6 +12,8 @@ staging:
   parameters:
     LogLevel: DEBUG
     RetentionInDays: "30"
+  flags:
+    can-test: false
 
 prod:
   parameters:
